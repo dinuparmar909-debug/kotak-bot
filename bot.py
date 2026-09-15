@@ -19,7 +19,7 @@ NIFTY500 = ["360ONE.NS","ABB.NS","ABCAPITAL.NS","ABFRL.NS","ABSLAMC.NS","ACC.NS"
 
 trade_count = 0
 traded_stocks = set()
-BOT_ACTIVE = False # Start me band rahega
+BOT_ACTIVE = False
 last_update_id = 0
 
 def send(msg):
@@ -39,9 +39,7 @@ def telegram_listener():
                 msg = upd.get("message", {})
                 text = msg.get("text", "").lower().strip()
                 chat = str(msg.get("chat", {}).get("id"))
-
                 if chat!= str(CHAT_ID): continue
-
                 if text in ["/start", "start", "chalu", "on"]:
                     BOT_ACTIVE = True
                     trade_count = 0
@@ -49,7 +47,7 @@ def telegram_listener():
                     send("🟢 *BOT STARTED*\nAb 9:25-10:30 me har 5 min Top 10 Gainers (1-4%) scan karega.\nBand karne ke liye `/stop` likho.")
                 elif text in ["/stop", "stop", "band", "off"]:
                     BOT_ACTIVE = False
-                    send("🔴 *BOT STOPPED*\nScanning band. Chalu karne ke liye `/start` likho.")
+                    send("🔴 *BOT STOPPED*")
         except: pass
         time.sleep(2)
 
@@ -71,34 +69,54 @@ def get_top_gainers():
 def scan_stock(symbol, change):
     global trade_count
     try:
+        # FIX 1: Poore din ka data lo (9:15 se) EMA sahi banega
         df = yf.download(symbol, period="1d", interval="5m", progress=False)
         if len(df) < 5: return
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+
         if df.index.tz is None: df.index = df.index.tz_localize('UTC').tz_convert(IST)
         else: df.index = df.index.tz_convert(IST)
+
+        # EMA poore din ke data pe
+        df['EMA20'] = df['Close'].ewm(span=20).mean()
+
+        # FIX 2: Lowest RED dhoondne ke liye AAJ KI SAARI candles (9:15 se)
+        df_today_all = df.between_time("09:15", "10:30")
+        if df_today_all.empty: return
+
+        red_all = df_today_all[df_today_all['Close'] < df_today_all['Open']]
+        if red_all.empty: return
+
+        # Yahi hai tumhari sahi line - aaj ki saari me se lowest
+        lowest = red_all.loc[red_all['Volume'].idxmin()]
+
+        # FIX 3: Entry check sirf 9:25-10:30 wali last candle pe
         df_930 = df.between_time("09:25", "10:30")
         if df_930.empty: return
-        df_930['EMA20'] = df_930['Close'].ewm(span=20).mean()
         last = df_930.iloc[-1]
+
+        # EMA 20 ke upar hona chahiye
         if last['Close'] < last['EMA20']: return
-        red = df_930[df_930['Close'] < df_930['Open']]
-        if red.empty: return
-        lowest = red.loc[red['Volume'].idxmin()]
+
         buy = float(lowest['High'] + 0.3)
         sl = float(lowest['Low'] - 0.3)
         risk = buy - sl
         if risk <= 0: return
         qty = max(1, int(200 / risk))
+
+        # Tenneco wala case ab pakdega - High break
         if last['Close'] > buy and symbol not in traded_stocks:
             if trade_count >= 5: return
             t1 = buy + (risk*2)
             t2 = buy + (risk*10)
-            msg = f"""🚀 *LONG: {symbol.replace('.NS','')} ({round(change,2)}%)*\n💰 Buy Above: `{round(buy,2)}`\n🛑 SL: `{round(sl,2)}`\n📦 Qty: `{qty}` (200₹ Risk)\n🎯 T1: `{round(t1,2)}` | T2: `{round(t2,2)}`"""
+            msg = f"""🚀 *LONG: {symbol.replace('.NS','')} ({round(change,2)}%)*\nLowest Red: {lowest.name.strftime('%H:%M')} Vol:{int(lowest['Volume'])}\n💰 Buy Above: `{round(buy,2)}`\n🛑 SL: `{round(sl,2)}`\n📦 Qty: `{qty}` (200₹ Risk)\n🎯 T1: `{round(t1,2)}` | T2: `{round(t2,2)}`"""
             send(msg)
             traded_stocks.add(symbol)
             trade_count += 1
-    except: pass
+    except Exception as e:
+        print(f"Error {symbol}: {e}")
 
-send("👋 Bot Ready! Chalu karne ke liye Telegram pe `/start` likho.")
+send("👋 Bot Ready! `/start` likho.")
 
 while True:
     now = datetime.now(IST)
